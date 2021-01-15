@@ -135,9 +135,14 @@ doc:
 doc-spelling:
 	@make -C docs spelling SPHINXOPTS="-W -E"
 
-.PHONY: install
-install:
+.PHONY: compile-deps
+compile-deps:
 	@pip install -U 'pip'
+	@pip install pip-tools
+	@pip-compile -q requirements/dev.in
+
+.PHONY: install
+install: compile-deps
 	@pip install -Ur requirements/dev.txt
 
 .PHONY: install-dev
