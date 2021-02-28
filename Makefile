@@ -143,7 +143,7 @@ doc-spelling:
 .PHONY: compile-deps
 compile-deps: .update-pip
 	@pip install pip-tools
-	@$(foreach fname,$(REQIN),pip-compile --allow-unsafe -q $(fname);)
+	@$(foreach fname,$(REQIN),pip-compile --allow-unsafe --generate-hashes -q $(fname);)
 
 .PHONY: install
 install: .update-pip
