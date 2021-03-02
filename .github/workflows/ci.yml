@@ -39,7 +39,7 @@ jobs:
     - name: Install dependencies
       uses: py-actions/py-dependency-install@v2
       with:
-        path: requirements/pinned/linux-lint.txt
+        path: requirements/pinned/linux-3.8-lint.txt
     - name: Pre-Commit hooks
       uses: pre-commit/action@v2.0.0
     - name: Install itself
