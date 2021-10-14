@@ -63,7 +63,7 @@ click==7.1.2
     #   wait-for-it
 click-default-group==1.2.2
     # via towncrier
-coverage[toml]==6.0.1
+coverage[toml]==6.0.2
     # via
     #   -r requirements/test.txt
     #   pytest-cov
@@ -81,7 +81,7 @@ filelock==3.0.12
     # via
     #   -r requirements/lint.txt
     #   virtualenv
-flake8==4.0.0
+flake8==4.0.1
     # via
     #   -r requirements/lint.txt
     #   flake8-pyi
