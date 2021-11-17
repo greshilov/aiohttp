@@ -2207,11 +2207,11 @@ class TestDNSCacheTable:
 async def test_connector_cache_trace_race() -> None:
     class DummyTracer:
         async def send_dns_cache_hit(self, *args, **kwargs):
-            connector._cached_hosts.remove(("", 0))
+            connector._cached_hosts.flush(("", 0))
 
     token = object()
     connector = TCPConnector()
-    connector._cached_hosts.add(("", 0), [token])
+    connector._cached_hosts.put(("", 0), [token])
 
     traces = [DummyTracer()]
     assert await connector._resolve_host("", 0, traces) == [token]
@@ -2223,12 +2223,12 @@ async def test_connector_throttle_trace_race(loop: Any) -> None:
 
     class DummyTracer:
         async def send_dns_cache_hit(self, *args, **kwargs):
-            event = connector._throttle_dns_events.pop(key)
-            event.set()
-            connector._cached_hosts.add(key, [token])
+            future = connector._throttle_dns_futures.pop(key)
+            future.set_result([token])
+            connector._cached_hosts.put(key, [token])
 
     connector = TCPConnector()
-    connector._throttle_dns_events[key] = EventResultOrError(loop)
+    connector._throttle_dns_futures[key] = loop.create_future()
     traces = [DummyTracer()]
     assert await connector._resolve_host("", 0, traces) == [token]
 

@@ -9,12 +9,11 @@ import pytest
 from aiohttp.resolver import AsyncResolver, DefaultResolver, ThreadedResolver
 
 try:
-    import aiodns
-
-    gethostbyname: Any = hasattr(aiodns.DNSResolver, "gethostbyname")
+    import dns
+    import dns.asyncresolver
+    PYTHONDNS_FOUND = True
 except ImportError:
-    aiodns = None
-    gethostbyname = False
+    PYTHONDNS_FOUND = False
 
 
 class FakeResult:
@@ -49,7 +48,8 @@ def fake_addrinfo(hosts: Any) -> Callable[..., Awaitable[Any]]:
     return fake
 
 
-@pytest.mark.skipif(not gethostbyname, reason="aiodns 1.1 required")
+@pytest.mark.skip
+@pytest.mark.skipif(not PYTHONDNS_FOUND, reason="dnspython required")
 async def test_async_resolver_positive_lookup(loop: Any) -> None:
     with patch("aiodns.DNSResolver") as mock:
         mock().gethostbyname.return_value = fake_result(["127.0.0.1"])
@@ -59,7 +59,8 @@ async def test_async_resolver_positive_lookup(loop: Any) -> None:
         mock().gethostbyname.assert_called_with("www.python.org", socket.AF_INET)
 
 
-@pytest.mark.skipif(not gethostbyname, reason="aiodns 1.1 required")
+@pytest.mark.skip
+@pytest.mark.skipif(not PYTHONDNS_FOUND, reason="dnspython required")
 async def test_async_resolver_multiple_replies(loop: Any) -> None:
     with patch("aiodns.DNSResolver") as mock:
         ips = ["127.0.0.1", "127.0.0.2", "127.0.0.3", "127.0.0.4"]
@@ -70,7 +71,8 @@ async def test_async_resolver_multiple_replies(loop: Any) -> None:
         assert len(ips) > 3, "Expecting multiple addresses"
 
 
-@pytest.mark.skipif(not gethostbyname, reason="aiodns 1.1 required")
+@pytest.mark.skip
+@pytest.mark.skipif(not PYTHONDNS_FOUND, reason="dnspython required")
 async def test_async_resolver_negative_lookup(loop: Any) -> None:
     with patch("aiodns.DNSResolver") as mock:
         mock().gethostbyname.side_effect = aiodns.error.DNSError()
@@ -78,8 +80,8 @@ async def test_async_resolver_negative_lookup(loop: Any) -> None:
         with pytest.raises(OSError):
             await resolver.resolve("doesnotexist.bla")
 
-
-@pytest.mark.skipif(not gethostbyname, reason="aiodns 1.1 required")
+@pytest.mark.skip
+@pytest.mark.skipif(not PYTHONDNS_FOUND, reason="dnspython required")
 async def test_async_resolver_no_hosts_in_gethostbyname(loop: Any) -> None:
     with patch("aiodns.DNSResolver") as mock:
         mock().gethostbyname.return_value = fake_result([])
@@ -148,26 +150,14 @@ async def test_close_for_threaded_resolver(loop: Any) -> None:
     await resolver.close()
 
 
-@pytest.mark.skipif(aiodns is None, reason="aiodns required")
-async def test_close_for_async_resolver(loop: Any) -> None:
-    resolver = AsyncResolver()
-    await resolver.close()
-
-
 async def test_default_loop_for_threaded_resolver(loop: Any) -> None:
     asyncio.set_event_loop(loop)
     resolver = ThreadedResolver()
     assert resolver._loop is loop
 
 
-@pytest.mark.skipif(aiodns is None, reason="aiodns required")
-async def test_default_loop_for_async_resolver(loop: Any) -> None:
-    asyncio.set_event_loop(loop)
-    resolver = AsyncResolver()
-    assert resolver._loop is loop
-
-
-@pytest.mark.skipif(not gethostbyname, reason="aiodns 1.1 required")
+@pytest.mark.skip
+@pytest.mark.skipif(not PYTHONDNS_FOUND, reason="dnspython required")
 async def test_async_resolver_ipv6_positive_lookup(loop: Any) -> None:
     with patch("aiodns.DNSResolver") as mock:
         mock().gethostbyname.return_value = fake_result(["::1"])
@@ -178,14 +168,13 @@ async def test_async_resolver_ipv6_positive_lookup(loop: Any) -> None:
 
 
 async def test_async_resolver_aiodns_not_present(loop: Any, monkeypatch: Any) -> None:
-    monkeypatch.setattr("aiohttp.resolver.aiodns", None)
+    monkeypatch.setattr("aiohttp.resolver.PYTHONDNS_FOUND", False)
     with pytest.raises(RuntimeError):
         AsyncResolver()
 
 
 def test_default_resolver() -> None:
-    # if gethostbyname:
-    #     assert DefaultResolver is AsyncResolver
-    # else:
-    #     assert DefaultResolver is ThreadedResolver
-    assert DefaultResolver is ThreadedResolver
+    if PYTHONDNS_FOUND:
+        assert DefaultResolver is AsyncResolver
+    else:
+        assert DefaultResolver is ThreadedResolver

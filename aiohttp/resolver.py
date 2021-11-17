@@ -2,18 +2,12 @@ import asyncio
 import socket
 from typing import Any, Dict, List, Type, Union
 
+import dns
+import dns.asyncresolver
+
 from .abc import AbstractResolver
 
 __all__ = ("ThreadedResolver", "AsyncResolver", "DefaultResolver")
-
-try:
-    import aiodns
-
-    # aiodns_default = hasattr(aiodns.DNSResolver, 'gethostbyname')
-except ImportError:  # pragma: no cover
-    aiodns = None
-
-aiodns_default = False
 
 
 class ThreadedResolver(AbstractResolver):
@@ -23,8 +17,12 @@ class ThreadedResolver(AbstractResolver):
     concurrent.futures.ThreadPoolExecutor is used by default.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, use_cache: bool = False, cache_size: int = 10000) -> None:
         self._loop = asyncio.get_running_loop()
+
+    @property
+    def use_cache(self) -> bool:
+        return False
 
     async def resolve(
         self, hostname: str, port: int = 0, family: int = socket.AF_INET
@@ -75,29 +73,55 @@ class ThreadedResolver(AbstractResolver):
 
 
 class AsyncResolver(AbstractResolver):
-    """Use the `aiodns` package to make asynchronous DNS lookups"""
+    """Use the `dnspython` package to make asynchronous DNS lookups"""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        if aiodns is None:
-            raise RuntimeError("Resolver requires aiodns library")
+    QUERY_TABLE = {
+        socket.AF_INET: dns.rdatatype.A,
+        socket.AF_INET6: dns.rdatatype.AAAA
+    }
 
-        self._loop = asyncio.get_running_loop()
-        self._resolver = aiodns.DNSResolver(*args, loop=self._loop, **kwargs)
+    def __init__(self, use_cache: bool = False, cache_size: int = 100000) -> None:
+        if use_cache:
+            cache = dns.resolver.LRUCache(max_size=cache_size)
+        else:
+            cache = None
+        self._resolver = dns.asyncresolver.Resolver(configure=True)
+        self._resolver.cache = cache
+
+    @property
+    def use_cache(self) -> bool:
+        return self._resolver.cache is not None
+
+    def is_cache_hit(self, host: str, family: int):
+        qname = dns.name.from_text(host, None)
+        rdtype = self.QUERY_TABLE[family]
+        rdclass = dns.rdataclass.IN
+        return self._resolver.cache.get((qname, rdtype, rdclass)) is not None
+
+    def flush(self, host: str = None, family: int = None):
+        if host is None and family is None:
+            return self._resolver.cache.flush()
+
+        qname = dns.name.from_text(host, None)
+        rdtype = self.QUERY_TABLE[family]
+        rdclass = dns.rdataclass.IN
+        return self._resolver.cache.flush((qname, rdtype, rdclass))
 
     async def resolve(
         self, host: str, port: int = 0, family: int = socket.AF_INET
     ) -> List[Dict[str, Any]]:
+
+        rdatatype = self.QUERY_TABLE[family]
         try:
-            resp = await self._resolver.gethostbyname(host, family)
-        except aiodns.error.DNSError as exc:
-            msg = exc.args[1] if len(exc.args) >= 1 else "DNS lookup failed"
-            raise OSError(msg) from exc
+            resp = await self._resolver.resolve(host, rdatatype, raise_on_no_answer=True)
+        except dns.exception.DNSException as exc:
+            raise OSError(exc.msg) from exc
         hosts = []
-        for address in resp.addresses:
+        for dns_record in resp:
             hosts.append(
                 {
                     "hostname": host,
-                    "host": address,
+                    "host": dns_record.address,
                     "port": port,
                     "family": family,
                     "proto": 0,
@@ -111,8 +135,8 @@ class AsyncResolver(AbstractResolver):
         return hosts
 
     async def close(self) -> None:
-        self._resolver.cancel()
+        self._resolver.close()
 
 
 _DefaultType = Type[Union[AsyncResolver, ThreadedResolver]]
-DefaultResolver: _DefaultType = AsyncResolver if aiodns_default else ThreadedResolver
+DefaultResolver: _DefaultType = AsyncResolver

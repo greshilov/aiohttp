@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import logging
 import random
+import socket
 import sys
 import traceback
 import warnings
@@ -28,6 +29,8 @@ from typing import (  # noqa
     Union,
     cast,
 )
+
+import dns
 
 from . import hdrs, helpers
 from .abc import AbstractResolver
@@ -700,7 +703,7 @@ class TCPConnector(BaseConnector):
     resolver - Enable DNS lookups and use this
         resolver
     use_dns_cache - Use memory cache for DNS lookups.
-    ttl_dns_cache - Max seconds having cached a DNS entry, None forever.
+    size_dns_cache - Max amount of cached DNS entries (LRU cache is used).
     family - socket address family
     local_addr - local tuple of (host, port) to bind socket to
 
@@ -718,8 +721,8 @@ class TCPConnector(BaseConnector):
         self,
         *,
         use_dns_cache: bool = True,
-        ttl_dns_cache: Optional[int] = 10,
-        family: int = 0,
+        size_dns_cache: Optional[int] = 1024,
+        family: int = socket.AF_INET,
         ssl: Union[None, bool, Fingerprint, SSLContext] = None,
         local_addr: Optional[Tuple[str, int]] = None,
         resolver: Optional[AbstractResolver] = None,
@@ -744,21 +747,10 @@ class TCPConnector(BaseConnector):
             )
         self._ssl = ssl
         if resolver is None:
-            resolver = DefaultResolver()
+            resolver = DefaultResolver(use_cache=use_dns_cache, cache_size=size_dns_cache)
         self._resolver: AbstractResolver = resolver
-
-        self._use_dns_cache = use_dns_cache
-        self._cached_hosts = _DNSCacheTable(ttl=ttl_dns_cache)
-        self._throttle_dns_events = (
-            {}
-        )  # type: Dict[Tuple[str, int], EventResultOrError]
         self._family = family
         self._local_addr = local_addr
-
-    def _close_immediately(self) -> List["asyncio.Future[None]"]:
-        for ev in self._throttle_dns_events.values():
-            ev.cancel()
-        return super()._close_immediately()
 
     @property
     def family(self) -> int:
@@ -768,18 +760,18 @@ class TCPConnector(BaseConnector):
     @property
     def use_dns_cache(self) -> bool:
         """True if local DNS caching is enabled."""
-        return self._use_dns_cache
-
+        return self._resolver.use_cache
+        
     def clear_dns_cache(
         self, host: Optional[str] = None, port: Optional[int] = None
     ) -> None:
         """Remove specified host/port or clear all dns local cache."""
         if host is not None and port is not None:
-            self._cached_hosts.remove((host, port))
+            self._resolver.flush(host, self._family)
         elif host is not None or port is not None:
             raise ValueError("either both host and port " "or none of them are allowed")
         else:
-            self._cached_hosts.clear()
+            self._resolver.flush()
 
     async def _resolve_host(
         self, host: str, port: int, traces: Optional[List["Trace"]] = None
@@ -796,66 +788,29 @@ class TCPConnector(BaseConnector):
                 }
             ]
 
-        if not self._use_dns_cache:
+        if traces:
+            for trace in traces:
+                await trace.send_dns_resolvehost_start(host)
 
-            if traces:
-                for trace in traces:
-                    await trace.send_dns_resolvehost_start(host)
+        if self.use_dns_cache:
+            cache_hit = self._resolver.is_cache_hit(host, family=self._family)
+            if cache_hit:
+                print(f'CACHE HIT FOR {host}')
 
-            res = await self._resolver.resolve(host, port, family=self._family)
+        res = await self._resolver.resolve(host, port, family=self._family)
 
-            if traces:
-                for trace in traces:
-                    await trace.send_dns_resolvehost_end(host)
-
-            return res
-
-        key = (host, port)
-
-        if (key in self._cached_hosts) and (not self._cached_hosts.expired(key)):
-            # get result early, before any await (#4014)
-            result = self._cached_hosts.next_addrs(key)
-
-            if traces:
-                for trace in traces:
+        if self.use_dns_cache and traces:
+            for trace in traces:
+                if cache_hit:
                     await trace.send_dns_cache_hit(host)
-            return result
-
-        if key in self._throttle_dns_events:
-            # get event early, before any await (#4014)
-            event = self._throttle_dns_events[key]
-            if traces:
-                for trace in traces:
-                    await trace.send_dns_cache_hit(host)
-            await event.wait()
-        else:
-            # update dict early, before any await (#4014)
-            self._throttle_dns_events[key] = EventResultOrError(self._loop)
-            if traces:
-                for trace in traces:
+                else:
                     await trace.send_dns_cache_miss(host)
-            try:
 
-                if traces:
-                    for trace in traces:
-                        await trace.send_dns_resolvehost_start(host)
+        if traces:
+            for trace in traces:
+                await trace.send_dns_resolvehost_end(host)
 
-                addrs = await self._resolver.resolve(host, port, family=self._family)
-                if traces:
-                    for trace in traces:
-                        await trace.send_dns_resolvehost_end(host)
-
-                self._cached_hosts.add(key, addrs)
-                self._throttle_dns_events[key].set()
-            except BaseException as e:
-                # any DNS exception, independently of the implementation
-                # is set for the waiters to raise the same exception.
-                self._throttle_dns_events[key].set(exc=e)
-                raise
-            finally:
-                self._throttle_dns_events.pop(key)
-
-        return self._cached_hosts.next_addrs(key)
+        return res
 
     async def _create_connection(
         self, req: "ClientRequest", traces: List["Trace"], timeout: "ClientTimeout"
